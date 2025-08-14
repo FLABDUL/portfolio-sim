@@ -1,6 +1,6 @@
 import csv
 from pathlib import Path
-import pandas as pd
+
 import pytest
 
 import pandas_portfolio_sim as sim
