@@ -16,13 +16,14 @@ ENV/
 # Editor & IDE settings
 .vscode/
 .idea/
+*.iml
 
 # Environment variables
 .env
 .env.*
 
 # Test outputs
-*.csv
+#*.csv
 *.log
 *.out
 *.coverage
