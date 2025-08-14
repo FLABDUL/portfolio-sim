@@ -2,7 +2,7 @@ from __future__ import annotations
 import sys
 import math
 import csv
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Dict, List, Set, Optional, Iterator
 import pandas as pd
 
@@ -26,6 +26,25 @@ class Component:
 class Portfolio:
     name: str
     components: List[Component]
+
+@dataclass
+class ComponentMap:
+    items: Dict[str, List[Component]] = field(default_factory=dict)
+
+    def add_component(self, portfolio: str, component: Component):
+        if portfolio not in self.items:
+            self.items[portfolio] = []
+        for c in self.items[portfolio]:
+            if c.name == component.name:
+                c.shares += component.shares
+                return
+        self.items[portfolio].append(component)
+
+    def to_portfolio_collection(self) -> PortfolioCollection:
+        return PortfolioCollection({
+            name: Portfolio(name, components)
+            for name, components in self.items.items()
+        })
 
 @dataclass
 class PortfolioCollection:
@@ -57,56 +76,95 @@ class FlattenedPortfolioCollection:
     def __iter__(self) -> Iterator[tuple[str, Dict[str, float]]]:
         return iter(self.weights_by_portfolio.items())
 
+@dataclass
+class MemoizedWeights:
+    items: Dict[str, Dict[str, float]] = field(default_factory=dict)
+
+    def __contains__(self, key: str) -> bool:
+        return key in self.items
+
+    def __getitem__(self, key: str) -> Dict[str, float]:
+        return self.items[key]
+
+    def __setitem__(self, key: str, value: Dict[str, float]):
+        self.items[key] = value
+
+@dataclass
+class CycleTracker:
+    visiting: Set[str] = field(default_factory=set)
+
+    def add(self, name: str):
+        self.visiting.add(name)
+
+    def remove(self, name: str):
+        self.visiting.remove(name)
+
+    def __contains__(self, name: str) -> bool:
+        return name in self.visiting
+
+@dataclass
+class StockToPortfoliosMap:
+    mapping: Dict[str, pd.DataFrame]
+
+    def get(self, stock: str) -> Optional[pd.DataFrame]:
+        return self.mapping.get(stock)
+
+@dataclass
+class PriceCache:
+    prices: Dict[str, float] = field(default_factory=dict)
+
+    def update(self, stock: str, price: float):
+        self.prices[stock] = price
+
+    def get(self, stock: str) -> Optional[float]:
+        return self.prices.get(stock)
+
+    def __contains__(self, stock: str) -> bool:
+        return stock in self.prices
+
 def read_portfolios_csv(path: str) -> PortfolioCollection:
     df = pd.read_csv(path, dtype={COL_NAME: str, COL_SHARES: str})
     if list(df.columns) != [COL_NAME, COL_SHARES]:
         raise ValueError(f"portfolios.csv must have columns exactly: {COL_NAME},{COL_SHARES}")
 
-    portfolio_map: Dict[str, List[Component]] = {}
+    component_map = ComponentMap()
     current_portfolio: Optional[str] = None
 
-    for row_index, row_data in df.iterrows():
-        entry_name = str(row_data[COL_NAME]).strip()
-        shares_value_raw = row_data[COL_SHARES]
+    for row_index, row in enumerate(df.itertuples(index=False)):
+        entry_name = str(getattr(row, COL_NAME)).strip()
+        shares_value_raw = getattr(row, COL_SHARES)
         is_portfolio_header = pd.isna(shares_value_raw) or str(shares_value_raw).strip() == ""
 
         if is_portfolio_header:
             current_portfolio = entry_name
-            if current_portfolio not in portfolio_map:
-                portfolio_map[current_portfolio] = []
         else:
             if current_portfolio is None:
                 raise ValueError(f"Found constituent before any portfolio header at row {row_index+2}")
             shares_quantity = float(str(shares_value_raw).strip())
-            existing = next((c for c in portfolio_map[current_portfolio] if c.name == entry_name), None)
-            if existing:
-                existing.shares += shares_quantity
-            else:
-                portfolio_map[current_portfolio].append(Component(entry_name, shares_quantity))
+            component_map.add_component(current_portfolio, Component(entry_name, shares_quantity))
 
-    portfolio_dict = {name: Portfolio(name, components) for name, components in portfolio_map.items()}
-    return PortfolioCollection(portfolio_dict)
+    return component_map.to_portfolio_collection()
 
 def flatten_to_stocks(portfolios: PortfolioCollection) -> FlattenedPortfolioCollection:
-    memoized_weights: Dict[str, Dict[str, float]] = {}
-    currently_visiting: Set[str] = set()
+    memoized_weights = MemoizedWeights()
+    visiting = CycleTracker()
 
     def dfs(current_node: str) -> Dict[str, float]:
         if current_node in memoized_weights:
             return memoized_weights[current_node]
-        if current_node in currently_visiting:
+        if current_node in visiting:
             raise ValueError(f"Cycle detected at '{current_node}'")
         if current_node not in portfolios.names():
             memoized_weights[current_node] = {current_node: 1.0}  # leaf stock
             return memoized_weights[current_node]
 
-        currently_visiting.add(current_node)
+        visiting.add(current_node)
         accumulated_weights: Dict[str, float] = {}
         for component in portfolios[current_node].components:
             sub_weights = dfs(component.name)
             for stock_name, stock_weight in sub_weights.items():
                 accumulated_weights[stock_name] = accumulated_weights.get(stock_name, 0.0) + component.shares * stock_weight
-        currently_visiting.remove(current_node)
+        visiting.remove(current_node)
         memoized_weights[current_node] = accumulated_weights
         return accumulated_weights
 
@@ -126,16 +184,16 @@ class PortfolioRuntime:
         self.current_portfolio_value: pd.Series = pd.Series(0.0, index=self.required_stock_counts.index, dtype="float64")
         self.seen_stock_counts: pd.Series = pd.Series(0, index=self.required_stock_counts.index, dtype="int64")
 
-        self.stock_to_portfolios_map: Dict[str, pd.DataFrame] = {
+        self.stock_to_portfolios_map = StockToPortfoliosMap({
             stock: sub_df[[COL_PORTFOLIO, COL_WEIGHT]].reset_index(drop=True)
             for stock, sub_df in flattened_df.groupby(COL_STOCK, sort=False)
-        }
-        self.stock_price_cache: Dict[str, float] = {}
+        })
+        self.stock_price_cache = PriceCache()
 
     def on_price(self, stock_name: str, asset_price: float):
         impacted_portfolios = self.stock_to_portfolios_map.get(stock_name)
         if impacted_portfolios is None or impacted_portfolios.empty:
-            self.stock_price_cache[stock_name] = asset_price
+            self.stock_price_cache.update(stock_name, asset_price)
             return []
 
         completed_updates = []
@@ -153,7 +211,7 @@ class PortfolioRuntime:
                 for portfolio_name in impacted_portfolios.loc[newly_completed_mask.values, COL_PORTFOLIO]:
                     completed_updates.append((portfolio_name, float(self.current_portfolio_value.loc[portfolio_name])))
         else:
-            old_price = self.stock_price_cache[stock_name]
+            old_price = self.stock_price_cache.get(stock_name)
             price_delta = asset_price - old_price
             if not math.isclose(price_delta, 0.0):
                 portfolio_names = impacted_portfolios[COL_PORTFOLIO].values
@@ -168,7 +226,7 @@ class PortfolioRuntime:
                     for portfolio_name in impacted_portfolios.loc[pd.Series(already_completed_mask).values, COL_PORTFOLIO]:
                         completed_updates.append((portfolio_name, float(self.current_portfolio_value.loc[portfolio_name])))
 
-        self.stock_price_cache[stock_name] = asset_price
+        self.stock_price_cache.update(stock_name, asset_price)
         completed_updates.sort(key=lambda x: x[0])
         return completed_updates
 
