@@ -1,5 +1,45 @@
+# Bytecode and cache
 __pycache__/
+*.py[cod]
+*.pyo
+*.pyd
 *.pyc
+*.pkl
+*.joblib
+
+# Virtual environments
+.venv/
+env/
+venv/
+ENV/
+
+# Editor & IDE settings
+.vscode/
+.idea/
+
+# Environment variables
 .env
+.env.*
+
+# Test outputs
 *.csv
 *.log
+*.out
+*.coverage
+coverage.xml
+htmlcov/
+.cache/
+
+# Linting / Ruff
+.ruff_cache/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Rye or Poetry lockfiles (if used)
+uv.lock
+poetry.lock
