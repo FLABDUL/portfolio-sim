@@ -53,7 +53,7 @@ def test_cycle_detection(tmp_path: Path):
         ],
     )
     portfolios = sim.read_portfolios_csv(tmp_path / "portfolios.csv")
-    with pytest.raises(ValueError, match="Cycle detected"):
+    with pytest.raises(sim.CycleDetectedError, match="Cycle detected"):
         sim.flatten_to_stocks(portfolios)
 
 

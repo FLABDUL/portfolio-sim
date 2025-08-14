@@ -124,6 +124,13 @@ class PriceCache:
     def __contains__(self, stock: str) -> bool:
         return stock in self.prices
 
+class CycleDetectedError(ValueError):
+    """Raised when a cycle is detected in portfolio resolution."""
+
+    def __init__(self, portfolio_name: str):
+        msg = f"Cycle detected at '{portfolio_name}'"
+        super().__init__(msg)
+
 def read_portfolios_csv(path: str) -> PortfolioCollection:
     df = pd.read_csv(path, dtype={COL_NAME: str, COL_SHARES: str})
 
@@ -151,7 +158,7 @@ def flatten_to_stocks(portfolios: PortfolioCollection) -> FlattenedPortfolioColl
         if current_node in memoized_weights:
             return memoized_weights[current_node]
         if current_node in visiting:
-            raise ValueError(f"Cycle detected at '{current_node}'")
+            raise CycleDetectedError(current_node)
         if current_node not in portfolios.names():
             memoized_weights[current_node] = {current_node: 1.0}
             return memoized_weights[current_node]
