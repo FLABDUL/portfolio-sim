@@ -124,13 +124,11 @@ class PriceCache:
 
 def read_portfolios_csv(path: str) -> PortfolioCollection:
     df = pd.read_csv(path, dtype={COL_NAME: str, COL_SHARES: str})
-    if list(df.columns) != [COL_NAME, COL_SHARES]:
-        raise ValueError(f"portfolios.csv must have columns exactly: {COL_NAME},{COL_SHARES}")
 
     component_map = ComponentMap()
     current_portfolio: Optional[str] = None
 
-    for row_index, row in enumerate(df.itertuples(index=False)):
+    for _, row in enumerate(df.itertuples(index=False)):
         entry_name = str(getattr(row, COL_NAME)).strip()
         shares_value_raw = getattr(row, COL_SHARES)
         is_portfolio_header = pd.isna(shares_value_raw) or str(shares_value_raw).strip() == ""
@@ -138,9 +136,7 @@ def read_portfolios_csv(path: str) -> PortfolioCollection:
         if is_portfolio_header:
             current_portfolio = entry_name
         else:
-            if current_portfolio is None:
-                raise ValueError(f"Found constituent before any portfolio header at row {row_index+2}")
-            shares_quantity = float(str(shares_value_raw).strip())
+            shares_quantity = float(shares_value_raw)
             component_map.add_component(current_portfolio, Component(entry_name, shares_quantity))
 
     return component_map.to_portfolio_collection()
@@ -155,7 +151,7 @@ def flatten_to_stocks(portfolios: PortfolioCollection) -> FlattenedPortfolioColl
         if current_node in visiting:
             raise ValueError(f"Cycle detected at '{current_node}'")
         if current_node not in portfolios.names():
-            memoized_weights[current_node] = {current_node: 1.0}  # leaf stock
+            memoized_weights[current_node] = {current_node: 1.0}
             return memoized_weights[current_node]
 
         visiting.add(current_node)
@@ -175,9 +171,6 @@ def flatten_to_stocks(portfolios: PortfolioCollection) -> FlattenedPortfolioColl
 
 class PortfolioRuntime:
     def __init__(self, flattened_df: pd.DataFrame):
-        if set(flattened_df.columns) != {COL_PORTFOLIO, COL_STOCK, COL_WEIGHT}:
-            raise ValueError(f"flattened_df must have columns: {COL_PORTFOLIO}, {COL_STOCK}, {COL_WEIGHT}")
-
         self.required_stock_counts: pd.Series = (
             flattened_df.groupby(COL_PORTFOLIO)[COL_STOCK].nunique().astype("int64")
         )
