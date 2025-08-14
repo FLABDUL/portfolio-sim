@@ -171,55 +171,64 @@ def flatten_to_stocks(portfolios: PortfolioCollection) -> FlattenedPortfolioColl
 
 class PortfolioRuntime:
     def __init__(self, flattened_df: pd.DataFrame):
-        self.required_stock_counts: pd.Series = (
+        self._required_stock_counts: pd.Series = (
             flattened_df.groupby(COL_PORTFOLIO)[COL_STOCK].nunique().astype("int64")
         )
-        self.current_portfolio_value: pd.Series = pd.Series(0.0, index=self.required_stock_counts.index, dtype="float64")
-        self.seen_stock_counts: pd.Series = pd.Series(0, index=self.required_stock_counts.index, dtype="int64")
+        self._current_portfolio_value: pd.Series = pd.Series(
+            0.0, index=self._required_stock_counts.index, dtype="float64"
+        )
+        self._seen_stock_counts: pd.Series = pd.Series(
+            0, index=self._required_stock_counts.index, dtype="int64"
+        )
 
-        self.stock_to_portfolios_map = StockToPortfoliosMap({
+        self._stock_to_portfolios_map = StockToPortfoliosMap({
             stock: sub_df[[COL_PORTFOLIO, COL_WEIGHT]].reset_index(drop=True)
             for stock, sub_df in flattened_df.groupby(COL_STOCK, sort=False)
         })
-        self.stock_price_cache = PriceCache()
+        self._stock_price_cache = PriceCache()
 
     def on_price(self, stock_name: str, asset_price: float):
-        impacted_portfolios = self.stock_to_portfolios_map.get(stock_name)
+        impacted_portfolios = self._stock_to_portfolios_map.get(stock_name)
         if impacted_portfolios is None or impacted_portfolios.empty:
-            self.stock_price_cache.update(stock_name, asset_price)
+            self._stock_price_cache.update(stock_name, asset_price)
             return []
 
         completed_updates = []
-        is_first_price_update = stock_name not in self.stock_price_cache
+        is_first_price_update = stock_name not in self._stock_price_cache
+        portfolio_names = impacted_portfolios[COL_PORTFOLIO].values
+        weights = impacted_portfolios[COL_WEIGHT].values
+
         if is_first_price_update:
-            portfolio_names = impacted_portfolios[COL_PORTFOLIO].values
-            weights = impacted_portfolios[COL_WEIGHT].values
             value_increment = weights * asset_price
+            self._current_portfolio_value.loc[portfolio_names] += value_increment
+            self._seen_stock_counts.loc[portfolio_names] += 1
 
-            self.current_portfolio_value.loc[portfolio_names] += value_increment
-            self.seen_stock_counts.loc[portfolio_names] += 1
+            newly_completed_mask = (
+                self._seen_stock_counts.loc[portfolio_names] ==
+                self._required_stock_counts.loc[portfolio_names]
+            )
 
-            newly_completed_mask = self.seen_stock_counts.loc[portfolio_names] == self.required_stock_counts.loc[portfolio_names]
             if newly_completed_mask.any():
                 for portfolio_name in impacted_portfolios.loc[newly_completed_mask.values, COL_PORTFOLIO]:
-                    completed_updates.append((portfolio_name, float(self.current_portfolio_value.loc[portfolio_name])))
+                    completed_updates.append((portfolio_name, float(self._current_portfolio_value.loc[portfolio_name])))
+
         else:
-            old_price = self.stock_price_cache.get(stock_name)
+            old_price = self._stock_price_cache.get(stock_name)
             price_delta = asset_price - old_price
             if not math.isclose(price_delta, 0.0):
-                portfolio_names = impacted_portfolios[COL_PORTFOLIO].values
-                weights = impacted_portfolios[COL_WEIGHT].values
                 value_increment = weights * price_delta
-                self.current_portfolio_value.loc[portfolio_names] += value_increment
+                self._current_portfolio_value.loc[portfolio_names] += value_increment
 
                 already_completed_mask = (
-                    self.seen_stock_counts.loc[portfolio_names].values == self.required_stock_counts.loc[portfolio_names].values
+                    self._seen_stock_counts.loc[portfolio_names].values ==
+                    self._required_stock_counts.loc[portfolio_names].values
                 )
+
                 if already_completed_mask.any():
                     for portfolio_name in impacted_portfolios.loc[pd.Series(already_completed_mask).values, COL_PORTFOLIO]:
-                        completed_updates.append((portfolio_name, float(self.current_portfolio_value.loc[portfolio_name])))
+                        completed_updates.append((portfolio_name, float(self._current_portfolio_value.loc[portfolio_name])))
 
-        self.stock_price_cache.update(stock_name, asset_price)
+        self._stock_price_cache.update(stock_name, asset_price)
         completed_updates.sort(key=lambda x: x[0])
         return completed_updates
 
