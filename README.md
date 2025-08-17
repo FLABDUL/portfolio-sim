@@ -2,153 +2,98 @@
 
 A Python program to calculate portfolio values from a stream of stock prices.
 
-This project processes two CSV files:
-- `portfolios.csv`: Defines portfolios as collections of stocks or other portfolios.
-- `prices.csv`: A stream of stock price updates.
+---
+
+## 📂 Overview
+
+This tool processes:
+
+- ✅ `portfolios.csv`: Defines portfolios as collections of stocks or other portfolios.
+- ✅ `prices.csv`: A time-ordered stream of stock price updates.
 
 It outputs:
-- `portfolio_prices.csv`: Contains all price updates **plus** portfolio values when computable.
+
+- 📤 `portfolio_prices.csv`: All price updates, plus computed portfolio values as soon as enough prices are known.
 
 ---
 
-## Problem Summary
-
-Given:
-- `portfolios.csv`: Defines portfolio structures.
-- `prices.csv`: Time-ordered price updates.
-
-Goal:
-- Output `portfolio_prices.csv`, which includes price updates and portfolio values as they become available.
-
-### Example:
-
-```csv
-# portfolios.csv
-NAME,SHARES
-TECH,
-AAPL,100
-MSFT,200
-NVDA,300
-
-# prices.csv
-NAME,PRICE
-AAPL,173
-MSFT,425
-NVDA,880
-
-# portfolio_prices.csv
-NAME,PRICE
-AAPL,173.0
-MSFT,425.0
-NVDA,880.0
-TECH,366300
-```
-
----
-
-## How to Run
+## 🚀 How to Run
 
 ```bash
 python src/pandas_portfolio_sim.py data/portfolios.csv data/prices.csv data/portfolio_prices.csv
 ```
 
+Make sure the `data/` directory contains the `portfolios.csv` and `prices.csv` input files.
+
 ---
 
-## File Formats
+## 💡 Example
 
-### portfolios.csv
-
+### Input: `portfolios.csv`
 ```csv
 NAME,SHARES
 TECH,
 AAPL,100
 MSFT,200
 NVDA,300
-AUTOS,
-FORD,100
-TSLA,200
-BMW,200
-INDUSTRIALS,
-TECH,2
-AUTOS,3
 ```
 
-### prices.csv
-
+### Input: `prices.csv`
 ```csv
 NAME,PRICE
 AAPL,173
 MSFT,425
 NVDA,880
-AAPL,174
-FORD,12
-TSLA,250
-BMW,80
 ```
 
-### portfolio_prices.csv
-
+### Output: `portfolio_prices.csv`
 ```csv
 NAME,PRICE
 AAPL,173.0
 MSFT,425.0
 NVDA,880.0
 TECH,366300
-AAPL,174.0
-TECH,366400
-FORD,12.0
-TSLA,250.0
-BMW,80.0
-AUTOS,67200
-INDUSTRIALS,934400
 ```
 
 ---
 
-## Development & Tooling
+## ⚙️ Environment Setup
 
-### 🐍 Setup (recommended: virtual environment)
+### 1. Create a Virtual Environment (recommended)
 
 ```bash
 python -m venv .venv
-# On PowerShell:
+# Activate it:
+# PowerShell
 .venv\Scripts\Activate.ps1
-# On bash:
+# or Bash
 source .venv/bin/activate
 ```
 
-### 📦 Install Dependencies (with `uv`)
+### 2. Install Dependencies
 
 ```bash
 pip install uv
 uv pip install -r requirements.txt
 ```
 
-Or install directly:
-
-```bash
-uv pip install pandas pytest ruff tryceratops
-```
-
 ---
 
-## 🧪 Running Tests
+## 🧪 Optional: Developer & Testing Instructions
+
+### Run All Tests
 
 ```bash
 pytest
 ```
 
----
-
-## 🧼 Linting with Ruff
-
-Check for issues:
+### Run Linting with Ruff
 
 ```bash
 ruff check .
 ```
 
-Auto-fix issues:
+To auto-fix:
 
 ```bash
 ruff check . --fix
@@ -156,22 +101,7 @@ ruff check . --fix
 
 ---
 
-## ⚠️ Check Try/Except Blocks with Tryceratops
-
-```bash
-python -m tryceratops .
-```
-
-This highlights:
-- Unhandled or overly broad exceptions
-- Logging issues in `except` blocks
-- Bad patterns like bare `except:`
-
----
-
-## 📄 Requirements
-
-You can regenerate your `requirements.txt` anytime with:
+## 📦 Regenerate Dependencies
 
 ```bash
 uv pip freeze > requirements.txt

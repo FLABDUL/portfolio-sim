@@ -3,12 +3,11 @@ from __future__ import annotations
 import csv
 import math
 import sys
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 
 import pandas as pd
 
-# Column constants
 COL_NAME = "NAME"
 COL_SHARES = "SHARES"
 COL_PRICE = "PRICE"
@@ -19,12 +18,12 @@ COL_WEIGHT = "weight"
 CSV_HEADER_OUTPUT = [COL_NAME, COL_PRICE]
 CSV_HEADER_FLATTENED = [COL_PORTFOLIO, COL_STOCK, COL_WEIGHT]
 
-@dataclass
+@dataclass(frozen=True)
 class Component:
     name: str
     shares: float
 
-@dataclass
+@dataclass(frozen=True)
 class Portfolio:
     name: str
     components: list[Component]
@@ -36,10 +35,13 @@ class ComponentMap:
     def add_component(self, portfolio: str, component: Component):
         if portfolio not in self.items:
             self.items[portfolio] = []
-        for c in self.items[portfolio]:
+
+        for i, c in enumerate(self.items[portfolio]):
             if c.name == component.name:
-                c.shares += component.shares
+                new_total = c.shares + component.shares
+                self.items[portfolio][i] = Component(c.name, new_total)
                 return
+
         self.items[portfolio].append(component)
 
     def to_portfolio_collection(self) -> PortfolioCollection:
@@ -49,7 +51,7 @@ class ComponentMap:
         })
 
 @dataclass
-class PortfolioCollection:
+class PortfolioCollection(Mapping[str, Portfolio]):
     items: dict[str, Portfolio]
 
     def names(self) -> set[str]:
@@ -58,11 +60,14 @@ class PortfolioCollection:
     def __getitem__(self, name: str) -> Portfolio:
         return self.items[name]
 
-    def __iter__(self) -> Iterator[tuple[str, Portfolio]]:
-        return iter(self.items.items())
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.items)
+
+    def __len__(self) -> int:
+        return len(self.items)
 
 @dataclass
-class FlattenedPortfolioCollection:
+class FlattenedPortfolioCollection(Mapping[str, dict[str, float]]):
     weights_by_portfolio: dict[str, dict[str, float]]
 
     def to_dataframe(self) -> pd.DataFrame:
@@ -75,21 +80,11 @@ class FlattenedPortfolioCollection:
     def __getitem__(self, name: str) -> dict[str, float]:
         return self.weights_by_portfolio[name]
 
-    def __iter__(self) -> Iterator[tuple[str, dict[str, float]]]:
-        return iter(self.weights_by_portfolio.items())
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.weights_by_portfolio)
 
-@dataclass
-class MemoizedWeights:
-    items: dict[str, dict[str, float]] = field(default_factory=dict)
-
-    def __contains__(self, key: str) -> bool:
-        return key in self.items
-
-    def __getitem__(self, key: str) -> dict[str, float]:
-        return self.items[key]
-
-    def __setitem__(self, key: str, value: dict[str, float]):
-        self.items[key] = value
+    def __len__(self) -> int:
+        return len(self.weights_by_portfolio)
 
 @dataclass
 class CycleTracker:
@@ -104,7 +99,7 @@ class CycleTracker:
     def __contains__(self, name: str) -> bool:
         return name in self.visiting
 
-@dataclass
+@dataclass(frozen=True)
 class StockToPortfoliosMap:
     mapping: dict[str, pd.DataFrame]
 
@@ -151,7 +146,7 @@ def read_portfolios_csv(path: str) -> PortfolioCollection:
     return component_map.to_portfolio_collection()
 
 def flatten_to_stocks(portfolios: PortfolioCollection) -> FlattenedPortfolioCollection:
-    memoized_weights = MemoizedWeights()
+    memoized_weights: dict[str, dict[str, float]] = {}
     visiting = CycleTracker()
 
     def dfs(current_node: str) -> dict[str, float]:
@@ -196,7 +191,7 @@ class PortfolioRuntime:
         })
         self._stock_price_cache = PriceCache()
 
-    def on_price(self, stock_name: str, asset_price: float):
+    def on_price(self, stock_name: str, asset_price: float) -> None:
         impacted_portfolios = self._stock_to_portfolios_map.get(stock_name)
         if impacted_portfolios is None or impacted_portfolios.empty:
             self._stock_price_cache.update(stock_name, asset_price)
