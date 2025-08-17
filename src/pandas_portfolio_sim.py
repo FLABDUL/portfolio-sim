@@ -6,7 +6,7 @@ import sys
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 
-import pandas as pd
+import polars as pl
 
 COL_NAME = "NAME"
 COL_SHARES = "SHARES"
@@ -70,12 +70,12 @@ class PortfolioCollection(Mapping[str, Portfolio]):
 class FlattenedPortfolioCollection(Mapping[str, dict[str, float]]):
     weights_by_portfolio: dict[str, dict[str, float]]
 
-    def to_dataframe(self) -> pd.DataFrame:
+    def to_dataframe(self) -> pl.DataFrame:
         rows = []
         for portfolio_name, stock_weights in self.weights_by_portfolio.items():
             for stock_name, weight in stock_weights.items():
                 rows.append((portfolio_name, stock_name, float(weight)))
-        return pd.DataFrame(rows, columns=CSV_HEADER_FLATTENED)
+        return pl.DataFrame(rows, schema=CSV_HEADER_FLATTENED)
 
     def __getitem__(self, name: str) -> dict[str, float]:
         return self.weights_by_portfolio[name]
@@ -101,9 +101,9 @@ class CycleTracker:
 
 @dataclass(frozen=True)
 class StockToPortfoliosMap:
-    mapping: dict[str, pd.DataFrame]
+    mapping: dict[str, pl.DataFrame]
 
-    def get(self, stock: str) -> pd.DataFrame | None:
+    def get(self, stock: str) -> pl.DataFrame | None:
         return self.mapping.get(stock)
 
 @dataclass
@@ -127,15 +127,18 @@ class CycleDetectedError(ValueError):
         super().__init__(msg)
 
 def read_portfolios_csv(path: str) -> PortfolioCollection:
-    df = pd.read_csv(path, dtype={COL_NAME: str, COL_SHARES: str})
+    df = pl.read_csv(path).with_columns([
+        pl.col(COL_NAME).cast(pl.Utf8),
+        pl.col(COL_SHARES).cast(pl.Utf8),
+    ])
 
     component_map = ComponentMap()
     current_portfolio: str | None = None
 
-    for _, row in enumerate(df.itertuples(index=False)):
-        entry_name = str(getattr(row, COL_NAME)).strip()
-        shares_value_raw = getattr(row, COL_SHARES)
-        is_portfolio_header = pd.isna(shares_value_raw) or str(shares_value_raw).strip() == ""
+    for row in df.iter_rows(named=True):
+        entry_name = row[COL_NAME].strip()
+        shares_value_raw = row[COL_SHARES]
+        is_portfolio_header = shares_value_raw is None or str(shares_value_raw).strip() == ""
 
         if is_portfolio_header:
             current_portfolio = entry_name
@@ -174,63 +177,58 @@ def flatten_to_stocks(portfolios: PortfolioCollection) -> FlattenedPortfolioColl
     return FlattenedPortfolioCollection(flattened_portfolios)
 
 class PortfolioRuntime:
-    def __init__(self, flattened_df: pd.DataFrame):
-        self._required_stock_counts: pd.Series = (
-            flattened_df.groupby(COL_PORTFOLIO)[COL_STOCK].nunique().astype("int64")
-        )
-        self._current_portfolio_value: pd.Series = pd.Series(
-            0.0, index=self._required_stock_counts.index, dtype="float64"
-        )
-        self._seen_stock_counts: pd.Series = pd.Series(
-            0, index=self._required_stock_counts.index, dtype="int64"
+    def __init__(self, flattened_df: pl.DataFrame):
+        grouped = (
+            flattened_df.group_by(COL_PORTFOLIO)
+            .agg(pl.col(COL_STOCK).n_unique().alias("required"))
+            .sort(COL_PORTFOLIO)
         )
 
+        df_counts = grouped.to_pandas().set_index(COL_PORTFOLIO)
+        df_counts.index.name = None  # optional: remove index name for consistency
+
+        self._required_stock_counts = df_counts["required"]
+        self._current_portfolio_value = pd.Series(0.0, index=self._required_stock_counts.index, dtype="float64")
+        self._seen_stock_counts = pd.Series(0, index=self._required_stock_counts.index, dtype="int64")
+
         self._stock_to_portfolios_map = StockToPortfoliosMap({
-            stock: sub_df[[COL_PORTFOLIO, COL_WEIGHT]].reset_index(drop=True)
-            for stock, sub_df in flattened_df.groupby(COL_STOCK, sort=False)
+            stock: sub_df.select([COL_PORTFOLIO, COL_WEIGHT]).sort(COL_PORTFOLIO)
+            for stock, sub_df in flattened_df.group_by(COL_STOCK, maintain_order=True)
         })
         self._stock_price_cache = PriceCache()
 
     def on_price(self, stock_name: str, asset_price: float) -> None:
         impacted_portfolios = self._stock_to_portfolios_map.get(stock_name)
-        if impacted_portfolios is None or impacted_portfolios.empty:
+        if impacted_portfolios is None or impacted_portfolios.is_empty():
             self._stock_price_cache.update(stock_name, asset_price)
             return []
 
         completed_updates = []
         is_first_price_update = stock_name not in self._stock_price_cache
-        portfolio_names = impacted_portfolios[COL_PORTFOLIO].values
-        weights = impacted_portfolios[COL_WEIGHT].values
+        portfolio_names = impacted_portfolios[COL_PORTFOLIO].to_list()
+        weights = impacted_portfolios[COL_WEIGHT].to_numpy()
 
         if is_first_price_update:
             value_increment = weights * asset_price
-            self._current_portfolio_value.loc[portfolio_names] += value_increment
-            self._seen_stock_counts.loc[portfolio_names] += 1
+            for i, name in enumerate(portfolio_names):
+                self._current_portfolio_value.loc[name] += value_increment[i]
+                self._seen_stock_counts.loc[name] += 1
 
-            newly_completed_mask = (
-                self._seen_stock_counts.loc[portfolio_names] ==
-                self._required_stock_counts.loc[portfolio_names]
-            )
-
-            if newly_completed_mask.any():
-                for portfolio_name in impacted_portfolios.loc[newly_completed_mask.values, COL_PORTFOLIO]:
-                    completed_updates.append((portfolio_name, float(self._current_portfolio_value.loc[portfolio_name])))
+            newly_completed = [name for name in portfolio_names if self._seen_stock_counts.loc[name] == self._required_stock_counts.loc[name]]
+            for name in newly_completed:
+                completed_updates.append((name, float(self._current_portfolio_value.loc[name])))
 
         else:
             old_price = self._stock_price_cache.get(stock_name)
             price_delta = asset_price - old_price
             if not math.isclose(price_delta, 0.0):
                 value_increment = weights * price_delta
-                self._current_portfolio_value.loc[portfolio_names] += value_increment
+                for i, name in enumerate(portfolio_names):
+                    self._current_portfolio_value.loc[name] += value_increment[i]
 
-                already_completed_mask = (
-                    self._seen_stock_counts.loc[portfolio_names].values ==
-                    self._required_stock_counts.loc[portfolio_names].values
-                )
-
-                if already_completed_mask.any():
-                    for portfolio_name in impacted_portfolios.loc[pd.Series(already_completed_mask).values, COL_PORTFOLIO]:
-                        completed_updates.append((portfolio_name, float(self._current_portfolio_value.loc[portfolio_name])))
+                already_completed = [name for name in portfolio_names if self._seen_stock_counts.loc[name] == self._required_stock_counts.loc[name]]
+                for name in already_completed:
+                    completed_updates.append((name, float(self._current_portfolio_value.loc[name])))
 
         self._stock_price_cache.update(stock_name, asset_price)
         completed_updates.sort(key=lambda x: x[0])
@@ -246,11 +244,11 @@ def main(portfolios_csv: str, prices_csv: str, output_csv: str) -> None:
         writer = csv.writer(fout)
         writer.writerow(CSV_HEADER_OUTPUT)
 
-        price_chunk_iter = pd.read_csv(prices_csv, dtype={COL_NAME: str, COL_PRICE: float}, chunksize=1)
-        for price_chunk in price_chunk_iter:
-            price_row = price_chunk.iloc[0]
-            asset_name = str(price_row[COL_NAME]).strip()
-            asset_price = float(price_row[COL_PRICE])
+        price_chunk_iter = pl.read_csv(prices_csv, dtypes={COL_NAME: pl.Utf8, COL_PRICE: pl.Float64}).iter_rows(
+            named=True)
+        for row in price_chunk_iter:
+            asset_name = str(row[COL_NAME]).strip()
+            asset_price = float(row[COL_PRICE])
             writer.writerow([asset_name, asset_price])
 
             for (portfolio_name, portfolio_value) in runtime.on_price(asset_name, asset_price):

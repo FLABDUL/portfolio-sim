@@ -31,7 +31,7 @@ def test_parse_and_flatten_basic(tmp_path: Path):
 
     df = flattened.to_dataframe()
     assert set(df.columns) == {sim.COL_PORTFOLIO, sim.COL_STOCK, sim.COL_WEIGHT}
-    assert {tuple(x) for x in df.values} == {
+    assert {tuple(x) for x in df.iter_rows()} == {
         ("TECH", "AAPL", 100.0),
         ("TECH", "MSFT", 200.0),
     }
