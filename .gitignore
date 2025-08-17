@@ -23,7 +23,7 @@ ENV/
 .env.*
 
 # Test outputs
-#*.csv
+*.csv
 *.log
 *.out
 *.coverage
